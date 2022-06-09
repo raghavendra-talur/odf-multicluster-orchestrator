@@ -29,6 +29,7 @@ import (
 	ocsv1 "github.com/red-hat-storage/ocs-operator/api/v1"
 	multiclusterv1alpha1 "github.com/red-hat-storage/odf-multicluster-orchestrator/api/v1alpha1"
 	"github.com/red-hat-storage/odf-multicluster-orchestrator/controllers/utils"
+	rookclient "github.com/rook/rook/pkg/client/clientset/versioned"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -49,6 +50,7 @@ type MirrorPeerReconciler struct {
 	Scheme           *runtime.Scheme
 	SpokeClient      client.Client
 	SpokeClusterName string
+	RookClient       rookclient.Interface
 }
 
 const (
@@ -136,9 +138,10 @@ func (r *MirrorPeerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if err != nil {
 		return ctrl.Result{Requeue: true}, fmt.Errorf("failed to get all cluster FSIDs, retrying again: %v", err)
 	}
-
 	klog.Info(clusterFSIDs)
+
 	if mirrorPeer.Spec.Type == multiclusterv1alpha1.Async {
+
 		klog.Infof("enabling async mode dependencies")
 		err = r.enableCSIAddons(ctx, scr.Namespace)
 		if err != nil {
@@ -300,28 +303,43 @@ func (r *MirrorPeerReconciler) toggleCSIAddons(ctx context.Context, namespace st
 }
 
 func (r *MirrorPeerReconciler) fetchClusterFSIDs(ctx context.Context, mp *multiclusterv1alpha1.MirrorPeer, clusterFSIDs map[string]string) error {
+
 	for _, pr := range mp.Spec.Items {
-		var secretName string
+		var cephClusterName string
 		if pr.ClusterName == r.SpokeClusterName {
-			secretName = fmt.Sprintf("cluster-peer-token-%s-cephcluster", pr.StorageClusterRef.Name)
-		} else {
-			secretName = utils.GetSecretNameByPeerRef(pr)
+			cephClusterName = fmt.Sprintf("%s-cephcluster", pr.StorageClusterRef.Name)
 		}
-		klog.Info("Checking secret ", secretName)
-		secret, err := utils.FetchSecretWithName(ctx, r.SpokeClient, types.NamespacedName{Name: secretName, Namespace: pr.StorageClusterRef.Namespace})
+		klog.Info("Checking cephcluster ", cephClusterName)
+		cephCluster, err := r.RookClient.CephV1().CephClusters(pr.StorageClusterRef.Namespace).Get(context.TODO(), cephClusterName, metav1.GetOptions{})
 		if err != nil {
-			klog.Error(err, "Error while fetching peer secret", "peerSecret ", secretName)
-			return err
+			return fmt.Errorf("unable to fetch ceph cluster err: %v", err)
 		}
 
-		token, err := utils.UnmarshalRookSecret(secret)
-		if err != nil {
-			klog.Error(err, "Error while unmarshalling peer secret", "peerSecret ", secretName)
-			return err
-		}
-
-		clusterFSIDs[pr.ClusterName] = token.FSID
+		clusterFSIDs[pr.ClusterName] = cephCluster.Status.CephStatus.FSID
 	}
+
+	//for _, pr := range mp.Spec.Items {
+	//	var secretName string
+	//	if pr.ClusterName == r.SpokeClusterName {
+	//		secretName = fmt.Sprintf("cluster-peer-token-%s-cephcluster", pr.StorageClusterRef.Name)
+	//	} else {
+	//		secretName = utils.GetSecretNameByPeerRef(pr)
+	//	}
+	//	klog.Info("Checking secret ", secretName)
+	//	secret, err := utils.FetchSecretWithName(ctx, r.SpokeClient, types.NamespacedName{Name: secretName, Namespace: pr.StorageClusterRef.Namespace})
+	//	if err != nil {
+	//		klog.Error(err, "Error while fetching peer secret", "peerSecret ", secretName)
+	//		return err
+	//	}
+
+	//	token, err := utils.UnmarshalRookSecret(secret)
+	//	if err != nil {
+	//		klog.Error(err, "Error while unmarshalling peer secret", "peerSecret ", secretName)
+	//		return err
+	//	}
+
+	//	clusterFSIDs[pr.ClusterName] = token.FSID
+	//}
 	return nil
 }
 
