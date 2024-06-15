@@ -123,13 +123,9 @@ func fakeS3InternalSecret(t *testing.T, clusterName string) *corev1.Secret {
 func getFakeClient(t *testing.T, mgrScheme *runtime.Scheme) client.Client {
 	emptyConfig, err := yaml.Marshal(rmn.RamenConfig{})
 	assert.NoError(t, err)
-	filledConfig1, err := yaml.Marshal(rmn.RamenConfig{
-		S3StoreProfiles: getS3Profile("namespace1", TestSourceManagedClusterSoth, TestDestinationManagedClusterNorth),
-	})
+	filledConfig1, err := yaml.Marshal(originalRamenConfig("namespace1", TestSourceManagedClusterSoth, TestDestinationManagedClusterNorth))
 	assert.NoError(t, err)
-	filledConfig2, err := yaml.Marshal(rmn.RamenConfig{
-		S3StoreProfiles: getS3Profile("namespace2", TestSourceManagedClusterEast, TestDestinationManagedClusterWest),
-	})
+	filledConfig2, err := yaml.Marshal(originalRamenConfig("namespace2", TestSourceManagedClusterEast, TestDestinationManagedClusterWest))
 	assert.NoError(t, err)
 
 	obj := []runtime.Object{
@@ -189,11 +185,10 @@ func getRamenS3Secret(secretName string, ctx context.Context, fakeClient client.
 	err := fakeClient.Get(ctx, namespacedName, &ramenSecret)
 
 	return ramenSecret, err
-
 }
 
-func getS3Profile(ramenNamespace string, sourceManagedClusterName string, destinationManagedClusterName string) []rmn.S3StoreProfile {
-	return []rmn.S3StoreProfile{
+func getS3Profile(ramenNamespace string, sourceManagedClusterName string, destinationManagedClusterName string, beforeTest bool) []rmn.S3StoreProfile {
+	s3Profiles := []rmn.S3StoreProfile{
 		{
 			S3ProfileName:        fmt.Sprintf("%s-%s-%s", utils.S3ProfilePrefix, sourceManagedClusterName, StorageClusterName),
 			S3Bucket:             TestS3BucketName,
@@ -202,6 +197,7 @@ func getS3Profile(ramenNamespace string, sourceManagedClusterName string, destin
 			S3SecretRef: corev1.SecretReference{
 				Name: utils.CreateUniqueSecretName(sourceManagedClusterName, StorageClusterNamespace, StorageClusterName, utils.S3ProfilePrefix),
 			},
+			CACertificates: []byte("test"),
 		},
 		{
 			S3ProfileName:        fmt.Sprintf("%s-%s-%s", utils.S3ProfilePrefix, destinationManagedClusterName, StorageClusterName),
@@ -211,13 +207,30 @@ func getS3Profile(ramenNamespace string, sourceManagedClusterName string, destin
 			S3SecretRef: corev1.SecretReference{
 				Name: utils.CreateUniqueSecretName(destinationManagedClusterName, StorageClusterNamespace, StorageClusterName, utils.S3ProfilePrefix),
 			},
+			CACertificates: []byte("test"),
 		},
+	}
+
+	// For testing update of existing S3 profile, we initialize the s3Profiles with invalid bucket name
+	// we expect the reconcile to update the bucket name and leave the CA certificates as is
+	if beforeTest && ramenNamespace == "namespace2" {
+		for i := range s3Profiles {
+			s3Profiles[i].S3Bucket = "invalid-bucket-name"
+		}
+	}
+
+	return s3Profiles
+}
+
+func originalRamenConfig(ramenNamespace string, source, destination string) rmn.RamenConfig {
+	return rmn.RamenConfig{
+		S3StoreProfiles: getS3Profile(ramenNamespace, source, destination, true),
 	}
 }
 
 func expectedRamenConfig(ramenNamespace string, source, destination string) rmn.RamenConfig {
 	return rmn.RamenConfig{
-		S3StoreProfiles: getS3Profile(ramenNamespace, source, destination),
+		S3StoreProfiles: getS3Profile(ramenNamespace, source, destination, false),
 	}
 }
 
@@ -281,6 +294,9 @@ func TestMirrorPeerSecretReconcile(t *testing.T) {
 			if c.name == "Creating new S3 Profile in filled Ramen Config" {
 				expectedConfig.S3StoreProfiles = append(expectedRamenConfig(c.ramenNamespace, TestSourceManagedClusterSoth, TestDestinationManagedClusterNorth).S3StoreProfiles, expectedConfig.S3StoreProfiles...)
 			}
+			fmt.Printf("test case: %v\n", c)
+			fmt.Printf("expectedConfig: %v\n", expectedConfig)
+			fmt.Printf("ramenConfig: %v\n", ramenConfig)
 			assert.True(t, reflect.DeepEqual(expectedConfig, ramenConfig))
 
 			// asset ramen s3 secret creation
